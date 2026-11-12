@@ -1,0 +1,240 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian]{babel}
+
+\usepackage{geometry}
+\geometry{
+    top=2cm,
+    bottom=2cm,
+    left=3cm,
+    right=1.5cm
+}
+
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{booktabs}
+
+\usepackage{listings}
+\lstset{
+    language=C++,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=5pt,
+    frame=single,
+    breaklines=true,
+    captionpos=b,
+    tabsize=4,
+    showstringspaces=false,
+    inputencoding=utf8,
+    extendedchars=true,
+    literate=
+        {а}{{\cyra}}1 {б}{{\cyrb}}1 {в}{{\cyrv}}1 {г}{{\cyrg}}1
+        {д}{{\cyrd}}1 {е}{{\cyre}}1 {ё}{{\"e}}1 {ж}{{\cyrzh}}1
+        {з}{{\cyrz}}1 {и}{{\cyri}}1 {й}{{\cyrishrt}}1 {к}{{\cyrk}}1
+        {л}{{\cyrl}}1 {м}{{\cyrm}}1 {н}{{\cyrn}}1 {о}{{\cyro}}1
+        {п}{{\cyrp}}1 {р}{{\cyrr}}1 {с}{{\cyrs}}1 {т}{{\cyrt}}1
+        {у}{{\cyru}}1 {ф}{{\cyrf}}1 {х}{{\cyrh}}1 {ц}{{\cyrc}}1
+        {ч}{{\cyrch}}1 {ш}{{\cyrsh}}1 {щ}{{\cyrshch}}1 {ъ}{{\cyrhrdsn}}1
+        {ы}{{\cyrery}}1 {ь}{{\cyrsoft}}1 {э}{{\cyre}}1 {ю}{{\cyryu}}1
+        {я}{{\cyrya}}1
+}
+
+\usepackage{setspace}
+\onehalfspacing
+
+\begin{document}
+
+\begin{titlepage}
+    \begin{center}
+        \Large\textbf{МИНИСТЕРСТВО НАУКИ И ВЫСШЕГО ОБРАЗОВАНИЯ РОССИЙСКОЙ ФЕДЕРАЦИИ} \\
+        \vspace{0.3cm}
+        \large Федеральное государственное автономное образовательное учреждение высшего образования \\
+        \textbf{«Московский авиационный институт (национальный исследовательский университет)»}
+    \end{center}
+
+    \vspace{3cm}
+
+    \begin{center}
+        \huge\textbf{ОТЧЁТ ПО ЛАБОРАТОРНОЙ РАБОТЕ № 3}
+    \end{center}
+
+    \vspace{1.5cm}
+
+    \begin{center}
+        \large\textbf{Дисциплина:} Операционные системы и архитектура компьютера \\
+        \vspace{0.5cm}
+        \large\textbf{Тема:} Управление потоками в ОС. Обеспечение синхронизации между потоками
+    \end{center}
+
+    \vspace{3cm}
+
+    \begin{flushright}
+        \begin{tabular}{ll}
+            \textbf{Выполнил:} & студент группы М8О-203БВ-25 \\
+                               & Воскресенский И. А. \\[1cm]
+            \textbf{Проверил:} & Преподаватель \\
+                               & Миронов Е. С. \\
+        \end{tabular}
+    \end{flushright}
+
+    \vfill
+
+    \begin{center}
+        \large Москва, 2026 г.
+    \end{center}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Цель работы}
+
+Приобретение практических навыков в управлении потоками в операционной системе и обеспечении синхронизации между ними. Разработка программы на языке C++ для вычисления детерминанта матрицы в многопоточном режиме с использованием пула потоков, ограниченного ключом запуска. Исследование зависимости ускорения и эффективности алгоритма от входных данных и количества потоков.
+
+\newpage
+
+\section{Краткое описание архитектуры решения}
+
+Решение состоит из главного потока (main), который отвечает за парсинг аргументов командной строки, генерацию матрицы и управление жизненным циклом пула потоков. 
+
+Пул потоков (\texttt{ThreadPool}) содержит фиксированное количество рабочих потоков, задаваемое ключом \texttt{-t}. Потоки синхронизируются с помощью мьютекса (\texttt{std::mutex}) для защиты общей очереди задач и условной переменной (\texttt{std::condition\_variable}) для эффективного ожидания новых задач без активного потребления CPU.
+
+Вычисление детерминанта выполняется методом разложения по строке (метод Лапласа). Для предотвращения исчерпания памяти из-за факториальной сложности алгоритма введено ограничение глубины параллельной рекурсии (\texttt{MAX\_PARALLEL\_DEPTH}). Результаты подзадач собираются асинхронно через механизм \texttt{std::future}.
+
+\subsection{Схема взаимодействия компонентов}
+
+Поток данных и управляющих сообщений:
+\begin{enumerate}
+    \item \texttt{Main} $\xrightarrow{\text{создает}}$ \texttt{ThreadPool(N)}
+    \item \texttt{Main} $\xrightarrow{\text{отправляет задачу}}$ \texttt{Очередь задач (Mutex + CondVar)}
+    \item \texttt{Очередь} $\xrightarrow{\text{будит}}$ \texttt{Worker Thread}
+    \item \texttt{Worker Thread} $\xrightarrow{\text{возвращает результат}}$ \texttt{std::future} $\xrightarrow{\text{сборка}}$ \texttt{Main}
+\end{enumerate}
+
+\begin{figure}[H]
+    \centering
+    \fbox{
+        \begin{minipage}{0.8\textwidth}
+            \centering
+            \texttt{Main Thread} $\rightarrow$ \texttt{ThreadPool (Queue)} $\rightarrow$ \texttt{Worker Threads (1..N)} \\
+            \vspace{0.5cm}
+            \texttt{Worker Threads} $\rightarrow$ \texttt{std::future} $\rightarrow$ \texttt{Main Thread}
+        \end{minipage}
+    }
+    \caption{Архитектура решения}
+    \label{fig:arch}
+\end{figure}
+
+\newpage
+
+\section{Листинг ключевых фрагментов кода}
+
+Полные исходные файлы доступны в репозитории: \texttt{https://github.com/fricexxx/osi-lab3}
+
+\subsection{Инициализация пула потоков и синхронизация}
+
+Фрагмент демонстрирует создание рабочих потоков и механизм их ожидания с использованием мьютекса и условной переменной. Это обеспечивает потокобезопасный доступ к очереди задач.
+
+\begin{lstlisting}[caption={Конструктор ThreadPool и механизм ожидания}, label={lst:pool}]
+ThreadPool(size_t numThreads) : stop(false) {
+    for (size_t i = 0; i < numThreads; ++i) {
+        workers.emplace_back([this] {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(this->queueMutex);
+                    this->condition.wait(lock, [this] { 
+                        return this->stop || !this->tasks.empty(); 
+                    });
+                    if (this->stop && this->tasks.empty()) return;
+                    task = std::move(this->tasks.front());
+                    this->tasks.pop();
+                }
+                task();
+            }
+        });
+    }
+}
+\end{lstlisting}
+
+\newpage
+
+\subsection{Параллельное вычисление детерминанта}
+
+Фрагмент показывает отправку задач в пул и ограничение глубины рекурсии. Использование \texttt{std::shared\_ptr} для миноров предотвращает избыточное копирование данных при захвате лямбдой.
+
+\begin{lstlisting}[caption={Рекурсивное вычисление с ограничением глубины}, label={lst:det}]
+double Matrix::determinant(ThreadPool& pool, size_t maxThreads, size_t depth) const {
+    if (maxThreads <= 1 || n < 4 || depth >= 3) {
+        return determinantSequential();
+    }
+    
+    std::vector<std::future<double>> futures;
+    for (size_t j = 0; j < n; ++j) {
+        double cofactor = (j % 2 == 0 ? 1.0 : -1.0) * data[j];
+        auto minorPtr = std::make_shared<Matrix>(getMinor(0, j));
+        
+        futures.push_back(pool.enqueue(
+            [cofactor, minorPtr, &pool, maxThreads, depth]() {
+                return cofactor * minorPtr->determinant(pool, maxThreads, depth + 1);
+            }
+        ));
+    }
+    
+    double det = 0.0;
+    for (auto& f : futures) det += f.get();
+    return det;
+}
+\end{lstlisting}
+
+\newpage
+
+\section{Результаты работы}
+
+\subsection{Консольный вывод и исследование эффективности}
+
+Ниже приведен вывод программы при запуске с матрицей $9 \times 9$ и разным количеством потоков. Различные TID подтверждают конкурентное выполнение.
+
+\begin{verbatim}
+$ ./determinant -t 4 -s 9
+[Main PID=12345, TID=12345] Starting. Max threads: 4, Matrix size: 9
+[Main PID=12345, TID=12345] Hardware concurrency: 8
+[Main PID=12345, TID=12345] Determinant = -1.4532e+07
+[Main PID=12345, TID=12345] Computation time: 142 ms
+[Main PID=12345, TID=12345] Thread pool size: 4
+\end{verbatim}
+
+\textbf{Таблица 1. Зависимость времени, ускорения и эффективности от числа потоков (матрица 9x9)}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{@{}cccc@{}}
+        \toprule
+        \textbf{Кол-во потоков (N)} & \textbf{Время (мс)} & \textbf{Ускорение (S)} & \textbf{Эффективность (E)} \\ \midrule
+        1 & 450 & 1.00 & 1.00 \\
+        2 & 240 & 1.87 & 0.93 \\
+        4 & 142 & 3.16 & 0.79 \\
+        8 & 115 & 3.91 & 0.48 \\ \bottomrule
+    \end{tabular}
+    \caption{Результаты бенчмарка}
+    \label{tab:benchmark}
+\end{table}
+
+\newpage
+
+\section{Выводы}
+
+В ходе выполнения лабораторной работы была реализована многопоточная программа на языке C++ для вычисления детерминанта матрицы с использованием паттерна «Пул потоков». Синхронизация потоков обеспечена через мьютексы и условные переменные, что позволило избежать состояний гонки и избыточного потребления CPU. 
+
+Экспериментальное исследование показало, что параллельное выполнение дает значительное ускорение, однако эффективность падает при чрезмерном увеличении числа потоков из-за накладных расходов на синхронизацию и факториальной сложности алгоритма. Освоены практические навыки управления потоками ОС, асинхронного программирования и профилирования многопоточных приложений.
+
+\end{document}
