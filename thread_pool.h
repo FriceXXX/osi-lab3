@@ -1,79 +1,108 @@
-#ifndef THREAD_POOL_H
-#define THREAD_POOL_H
+#ifndef POSIX_THREAD_POOL_H
+#define POSIX_THREAD_POOL_H
+
+#include "posix_types.h"
+#include "posix_future.h"
 
 #include <vector>
 #include <queue>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <functional>
-#include <future>
 #include <stdexcept>
+#include <iostream>
+#include <cstring>
 
-class ThreadPool {
+class PosixThreadPool {
 public:
-    explicit ThreadPool(size_t numThreads) : stop(false) {
+    explicit PosixThreadPool(size_t numThreads) : stop(false) {
         if (numThreads == 0) numThreads = 1;
-        
+
+        posix_mutex_init(&queueMutex);
+        posix_cond_init(&queueCond);
+
         for (size_t i = 0; i < numThreads; ++i) {
-            workers.emplace_back([this] {
-                while (true) {
-                    std::function<void()> task;
-                    {
-                        std::unique_lock<std::mutex> lock(this->queueMutex);
-                        this->condition.wait(lock, [this] { 
-                            return this->stop || !this->tasks.empty(); 
-                        });
-                        
-                        if (this->stop && this->tasks.empty()) return;
-                        
-                        task = std::move(this->tasks.front());
-                        this->tasks.pop();
-                    }
-                    task();
-                }
-            });
-        }
-    }
-
-    template<class F>
-    auto enqueue(F&& f) -> std::future<decltype(f())> {
-        using return_type = decltype(f());
-        
-        auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
-        std::future<return_type> res = task->get_future();
-        
-        {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            if (stop) throw std::runtime_error("enqueue on stopped ThreadPool");
-            tasks.emplace([task]() { (*task)(); });
-        }
-        condition.notify_one();
-        return res;
-    }
-
-    ~ThreadPool() {
-        {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            stop = true;
-        }
-        condition.notify_all();
-        
-        for (std::thread &worker : workers) {
-            if (worker.joinable()) {
-                worker.join();
+            PosixThread thread;
+            int rc = pthread_create(&thread, nullptr,
+                                    &PosixThreadPool::workerThreadProc,
+                                    this);
+            if (rc != 0) {
+                std::cerr << "pthread_create failed: " << strerror(rc) << std::endl;
+                throw std::runtime_error("pthread_create failed");
             }
+            workers.push_back(thread);
         }
+    }
+
+    PosixFuture enqueue(std::function<double()> task) {
+        PosixFuture future;
+
+        auto wrappedTask = [task, future]() {
+            double result = task();
+            future.set(result);
+        };
+
+        posix_mutex_lock(&queueMutex);
+        if (stop) {
+            posix_mutex_unlock(&queueMutex);
+            throw std::runtime_error("enqueue on stopped ThreadPool");
+        }
+        tasks.push(std::move(wrappedTask));
+        posix_cond_signal(&queueCond);
+        posix_mutex_unlock(&queueMutex);
+
+        return future;
+    }
+
+    ~PosixThreadPool() {
+        posix_mutex_lock(&queueMutex);
+        stop = true;
+        posix_cond_broadcast(&queueCond);
+        posix_mutex_unlock(&queueMutex);
+
+        for (PosixThread thread : workers) {
+            pthread_join(thread, nullptr);
+        }
+
+        posix_cond_destroy(&queueCond);
+        posix_mutex_destroy(&queueMutex);
     }
 
     size_t getThreadCount() const { return workers.size(); }
 
 private:
-    std::vector<std::thread> workers;
+    std::vector<PosixThread> workers;
     std::queue<std::function<void()>> tasks;
-    std::mutex queueMutex;
-    std::condition_variable condition;
+    PosixMutex queueMutex;
+    PosixCondVar queueCond;
     bool stop;
+
+    static void* workerThreadProc(void* arg) {
+        PosixThreadPool* pool = static_cast<PosixThreadPool*>(arg);
+        pool->workerLoop();
+        return nullptr;
+    }
+
+    void workerLoop() {
+        while (true) {
+            std::function<void()> task;
+
+            posix_mutex_lock(&queueMutex);
+
+            while (!stop && tasks.empty()) {
+                posix_cond_wait(&queueCond, &queueMutex);
+            }
+
+            if (stop && tasks.empty()) {
+                posix_mutex_unlock(&queueMutex);
+                return;
+            }
+
+            task = std::move(tasks.front());
+            tasks.pop();
+            posix_mutex_unlock(&queueMutex);
+
+            task();
+        }
+    }
 };
 
-#endif
+#endif  
